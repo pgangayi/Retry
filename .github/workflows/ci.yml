@@ -138,6 +138,12 @@ jobs:
           $retries = 0; while ($retries -lt 10) { if (pg_isready -h localhost -p 5432 -U postgres) { break } ; Start-Sleep -Seconds 2; $retries++ }; 
         shell: pwsh
 
+      - name: Apply migrations
+        run: |
+          Write-Host "Applying migrations...";
+          Get-ChildItem migrations/*.sql | ForEach-Object { psql -h localhost -p 5432 -U postgres -d postgres -f $_.FullName }
+        shell: pwsh
+
       - name: Run integration tests
         env:
           SUPABASE_DB_URL: ${{ env.SUPABASE_DB_URL }}

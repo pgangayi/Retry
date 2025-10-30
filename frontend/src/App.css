@@ -1,0 +1,23 @@
+.app {
+  min-height: 100vh;
+}
+
+header {
+  background-color: var(--surface-color);
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+nav {
+  display: flex;
+  gap: 1rem;
+}
+
+nav a {
+  color: var(--accent-color);
+  text-decoration: none;
+}
+
+main {
+  padding: 1rem;
+}

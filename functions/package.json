@@ -1,0 +1,9 @@
+{
+  "name": "farmers-boot-functions",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@sentry/cloudflare": "^8.0.0",
+    "@supabase/supabase-js": "^2.38.5"
+  }
+}
