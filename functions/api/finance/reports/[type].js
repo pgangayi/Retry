@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Finance Reports API using D1
+// Generates various financial reports using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env, params } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const url = new URL(request.url);
 
   try {
-    // Validate JWT
+    // Validate JWT (using Supabase for auth, D1 for data)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,19 +16,17 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('../../_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
-
-    // Use service role client for database operations
-    const dbClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    const userId = user.id;
 
     if (type === 'summary') {
       const farmId = url.searchParams.get('farm_id');
@@ -39,14 +38,15 @@ export async function onRequest(context) {
       }
 
       // Verify user has access to farm
-      const { data: farmAccess, error: accessError } = await dbClient
-        .from('farm_members')
-        .select('id')
-        .eq('farm_id', farmId)
-        .eq('user_id', user.id)
-        .single();
+      const accessQuery = `
+        SELECT id FROM farm_members
+        WHERE farm_id = ? AND user_id = ?
+      `;
+      const { results: farmAccess } = await env.DB.prepare(accessQuery)
+        .bind(farmId, userId)
+        .all();
 
-      if (accessError || !farmAccess) {
+      if (!farmAccess || farmAccess.length === 0) {
         return new Response(JSON.stringify({ error: 'Forbidden' }), {
           status: 403,
           headers: { 'Content-Type': 'application/json' }
@@ -56,16 +56,19 @@ export async function onRequest(context) {
       const startDate = url.searchParams.get('start_date') || '2024-01-01';
       const endDate = url.searchParams.get('end_date') || new Date().toISOString().split('T')[0];
 
-      // Get finance entries for the period
-      const { data: entries, error: entriesError } = await dbClient
-        .from('finance_entries')
-        .select('*')
-        .eq('farm_id', farmId)
-        .gte('entry_date', startDate)
-        .lte('entry_date', endDate);
+      // Get finance entries for the period using D1
+      const entriesQuery = `
+        SELECT id, type, amount, description, date, category
+        FROM finance_entries
+        WHERE farm_id = ? AND date >= ? AND date <= ?
+        ORDER BY date DESC
+      `;
 
-      if (entriesError) {
-        console.error('Database error:', entriesError);
+      const { results: entries } = await env.DB.prepare(entriesQuery)
+        .bind(farmId, startDate, endDate)
+        .all();
+
+      if (!entries) {
         return new Response(JSON.stringify({ error: 'Database error' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
@@ -109,25 +112,149 @@ export async function onRequest(context) {
         headers: { 'Content-Type': 'application/json' }
       });
 
-    } else {
-      // Mock finance report for other types
-      const mockReport = {
-        type,
-        period: '2024-10',
-        totalIncome: type === 'income' ? 5000.00 : 0,
-        totalExpenses: type === 'expenses' ? 2500.00 : 0,
-        netProfit: type === 'profit' ? 2500.00 : 0,
-        entries: [
-          {
-            id: 'entry-1',
-            amount: 1500.00,
-            description: 'Mock entry',
-            date: '2024-10-15T00:00:00Z'
-          }
-        ]
-      };
+    } else if (type === 'income') {
+      // Generate income report
+      const farmId = url.searchParams.get('farm_id');
+      const startDate = url.searchParams.get('start_date') || '2024-01-01';
+      const endDate = url.searchParams.get('end_date') || new Date().toISOString().split('T')[0];
 
-      return new Response(JSON.stringify(mockReport), {
+      let query, params;
+      if (farmId) {
+        // Verify access
+        const accessQuery = `SELECT id FROM farm_members WHERE farm_id = ? AND user_id = ?`;
+        const { results: access } = await env.DB.prepare(accessQuery).bind(farmId, userId).all();
+        if (!access || access.length === 0) {
+          return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+        }
+
+        query = `
+          SELECT id, amount, description, date, category
+          FROM finance_entries
+          WHERE farm_id = ? AND type = 'income' AND date >= ? AND date <= ?
+          ORDER BY date DESC
+        `;
+        params = [farmId, startDate, endDate];
+      } else {
+        // All farms for user
+        query = `
+          SELECT fe.id, fe.amount, fe.description, fe.date, fe.category, f.name as farm_name
+          FROM finance_entries fe
+          JOIN farms f ON fe.farm_id = f.id
+          JOIN farm_members fm ON f.id = fm.farm_id
+          WHERE fm.user_id = ? AND fe.type = 'income' AND fe.date >= ? AND fe.date <= ?
+          ORDER BY fe.date DESC
+        `;
+        params = [userId, startDate, endDate];
+      }
+
+      const { results: incomeEntries } = await env.DB.prepare(query).bind(...params).all();
+      const totalIncome = incomeEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+      return new Response(JSON.stringify({
+        type: 'income',
+        period: { start_date: startDate, end_date: endDate },
+        total_income: totalIncome,
+        entries: incomeEntries
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } else if (type === 'expenses') {
+      // Generate expenses report
+      const farmId = url.searchParams.get('farm_id');
+      const startDate = url.searchParams.get('start_date') || '2024-01-01';
+      const endDate = url.searchParams.get('end_date') || new Date().toISOString().split('T')[0];
+
+      let query, params;
+      if (farmId) {
+        // Verify access
+        const accessQuery = `SELECT id FROM farm_members WHERE farm_id = ? AND user_id = ?`;
+        const { results: access } = await env.DB.prepare(accessQuery).bind(farmId, userId).all();
+        if (!access || access.length === 0) {
+          return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+        }
+
+        query = `
+          SELECT id, amount, description, date, category
+          FROM finance_entries
+          WHERE farm_id = ? AND type = 'expense' AND date >= ? AND date <= ?
+          ORDER BY date DESC
+        `;
+        params = [farmId, startDate, endDate];
+      } else {
+        // All farms for user
+        query = `
+          SELECT fe.id, fe.amount, fe.description, fe.date, fe.category, f.name as farm_name
+          FROM finance_entries fe
+          JOIN farms f ON fe.farm_id = f.id
+          JOIN farm_members fm ON f.id = fm.farm_id
+          WHERE fm.user_id = ? AND fe.type = 'expense' AND fe.date >= ? AND fe.date <= ?
+          ORDER BY fe.date DESC
+        `;
+        params = [userId, startDate, endDate];
+      }
+
+      const { results: expenseEntries } = await env.DB.prepare(query).bind(...params).all();
+      const totalExpenses = expenseEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+      return new Response(JSON.stringify({
+        type: 'expenses',
+        period: { start_date: startDate, end_date: endDate },
+        total_expenses: totalExpenses,
+        entries: expenseEntries
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } else if (type === 'profit') {
+      // Generate profit/loss report
+      const farmId = url.searchParams.get('farm_id');
+      const startDate = url.searchParams.get('start_date') || '2024-01-01';
+      const endDate = url.searchParams.get('end_date') || new Date().toISOString().split('T')[0];
+
+      let incomeQuery, expenseQuery, params;
+      if (farmId) {
+        // Verify access
+        const accessQuery = `SELECT id FROM farm_members WHERE farm_id = ? AND user_id = ?`;
+        const { results: access } = await env.DB.prepare(accessQuery).bind(farmId, userId).all();
+        if (!access || access.length === 0) {
+          return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+        }
+
+        incomeQuery = `SELECT SUM(amount) as total FROM finance_entries WHERE farm_id = ? AND type = 'income' AND date >= ? AND date <= ?`;
+        expenseQuery = `SELECT SUM(amount) as total FROM finance_entries WHERE farm_id = ? AND type = 'expense' AND date >= ? AND date <= ?`;
+        params = [farmId, startDate, endDate];
+      } else {
+        // All farms for user
+        incomeQuery = `
+          SELECT SUM(fe.amount) as total FROM finance_entries fe
+          JOIN farms f ON fe.farm_id = f.id
+          JOIN farm_members fm ON f.id = fm.farm_id
+          WHERE fm.user_id = ? AND fe.type = 'income' AND fe.date >= ? AND fe.date <= ?
+        `;
+        expenseQuery = `
+          SELECT SUM(fe.amount) as total FROM finance_entries fe
+          JOIN farms f ON fe.farm_id = f.id
+          JOIN farm_members fm ON f.id = fm.farm_id
+          WHERE fm.user_id = ? AND fe.type = 'expense' AND fe.date >= ? AND fe.date <= ?
+        `;
+        params = [userId, startDate, endDate];
+      }
+
+      const { results: incomeResult } = await env.DB.prepare(incomeQuery).bind(...params).all();
+      const { results: expenseResult } = await env.DB.prepare(expenseQuery).bind(...params).all();
+
+      const totalIncome = incomeResult[0]?.total || 0;
+      const totalExpenses = expenseResult[0]?.total || 0;
+      const netProfit = totalIncome - totalExpenses;
+
+      return new Response(JSON.stringify({
+        type: 'profit',
+        period: { start_date: startDate, end_date: endDate },
+        total_income: totalIncome,
+        total_expenses: totalExpenses,
+        net_profit: netProfit
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } else {
+      return new Response(JSON.stringify({ error: 'Report type not supported' }), {
+        status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }

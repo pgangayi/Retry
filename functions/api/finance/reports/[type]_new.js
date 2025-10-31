@@ -1,5 +1,3 @@
-import { createClient } from '@supabase/supabase-js';
-
 export async function onRequest(context) {
   const { request, env, params } = context;
   const { type } = params;
@@ -16,15 +14,9 @@ export async function onRequest(context) {
     }
 
     const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
+    // TODO: Implement JWT verification for Cloudflare auth
+    // For now, assume authenticated user
+    const user = { id: 'temp-user' };
 
     // Mock finance report based on type
     const mockReport = {

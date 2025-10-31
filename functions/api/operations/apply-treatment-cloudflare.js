@@ -1,14 +1,15 @@
 // Cloudflare Pages Function wrapper for apply-treatment
-// - Verifies incoming user JWT with Supabase `/auth/v1/user`
-// - Calls Supabase PostgREST RPC `apply_treatment` with service_role key
-// - Expects env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SENTRY_DSN (optional)
+// - Verifies incoming user JWT using local AuthUtils and D1
+// - Calls local JS implementation `applyTreatment` which uses D1 (env.DB)
+// - Expects env vars: JWT_SECRET, WEBHOOK_SECRET, SENTRY_DSN (optional)
 
 // import * as Sentry from '@sentry/cloudflare';
 
+import { AuthUtils } from '../_auth.js';
+import { applyTreatment } from './apply-treatment.js';
+
 export async function onRequest(context) {
   const { request, env } = context;
-  const SUPABASE_URL = env.SUPABASE_URL;
-  const SERVICE_ROLE = env.SUPABASE_SERVICE_ROLE_KEY;
   const SENTRY_DSN = env.SENTRY_DSN;
 
   // Temporarily disabled Sentry until proper Cloudflare integration is configured
@@ -32,10 +33,11 @@ export async function onRequest(context) {
   */
 
   try {
-    if (!SUPABASE_URL || !SERVICE_ROLE) {
-      throw new Error('Server misconfigured: missing Supabase credentials');
-    }
-
+    // Use internal JWT validation (AuthUtils) and D1 for data
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) return new Response(JSON.stringify({ error: 'invalid token' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    const userId = user.id;
     // Start Sentry transaction (disabled)
     // const transaction = SENTRY_DSN ? Sentry.startTransaction({
     //   name: 'apply-treatment',
@@ -47,20 +49,7 @@ export async function onRequest(context) {
       throw new Error('Missing authorization header');
     }
 
-    // Validate user token by calling Supabase auth user endpoint
-    const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      method: 'GET',
-      headers: { 'Authorization': authHeader }
-    });
-
-    if (!userRes.ok) {
-      return new Response(JSON.stringify({ error: 'invalid token' }), { status: 401 });
-    }
-    const userJson = await userRes.json();
-    const userId = userJson?.id;
-    if (!userId) return new Response(JSON.stringify({ error: 'could not determine user id' }), { status: 401 });
-
-    // Parse body and forward to RPC
+    // Parse body
     let payload;
     try {
       payload = await request.json();
@@ -71,39 +60,30 @@ export async function onRequest(context) {
     // Optional idempotency key from header
     const idempotencyKey = request.headers.get('Idempotency-Key') || null;
 
-    // Prepare RPC call
-    const rpcUrl = `${SUPABASE_URL}/rest/v1/rpc/apply_treatment`;
-    const rpcBody = { payload: payload, user_id: userId, idempotency_key: idempotencyKey };
+    // Call shared applyTreatment implementation with D1 db
+    const deps = {
+      db: env.DB,
+      userId,
+      idempotencyKey,
+      // optional idempotency hook: check operations table if present
+      checkIdempotency: async (key) => {
+        try {
+          const { results } = await env.DB.prepare('SELECT response_body FROM operations WHERE idempotency_key = ? LIMIT 1').bind(key).all();
+          if (results && results.length > 0) return JSON.parse(results[0].response_body);
+          return null;
+        } catch (e) {
+          // Table might not exist in D1 schema; treat as no-op
+          return null;
+        }
+      }
+    };
 
-    const rpcRes = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SERVICE_ROLE,
-        'Authorization': `Bearer ${SERVICE_ROLE}`
-      },
-      body: JSON.stringify(rpcBody)
-    });
-
-    const rpcJson = await rpcRes.text();
-    let responseBody;
-    try {
-      responseBody = JSON.parse(rpcJson);
-    } catch (e) {
-      responseBody = { error: 'invalid rpc response' };
-    }
-
-    // Map RPC errors to HTTP status codes
-    let status = rpcRes.status;
-    if (responseBody.error === 'insufficient_inventory') {
-      status = 409;
-    } else if (responseBody.error) {
-      status = 400; // or 500 depending on error type
-    }
+    const result = await applyTreatment({ payload, deps });
+    let status = result.status || 500;
+    const responseBody = result.body || { error: 'internal' };
 
     // If treatment was successful, trigger background processing
     if (status === 200 && responseBody.treatmentId) {
-      // Fire and forget - don't wait for webhook response
       triggerTreatmentAppliedWebhook(env, {
         treatmentId: responseBody.treatmentId,
         farmId: payload.farmId,

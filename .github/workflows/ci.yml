@@ -58,11 +58,42 @@ jobs:
         run: |
           cd frontend; npm ci
 
-      - name: Run frontend build & tests
+      - name: Lint frontend
         if: steps.check.outputs.exists == 'true'
         shell: pwsh
         run: |
-          cd frontend; npm run build --if-present; npm run test --if-present
+          cd frontend; npm run lint
+
+      - name: Typecheck frontend
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          cd frontend; npx tsc --noEmit
+
+      - name: Run frontend unit tests
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          cd frontend; npm run test:unit
+
+      - name: Build frontend
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          cd frontend; npm run build
+
+      - name: Audit frontend
+        if: steps.check.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          cd frontend; npm audit --json > audit-report.json
+
+      - name: Upload frontend audit report
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-audit-report
+          path: frontend/audit-report.json
 
       - name: Skip frontend
         if: steps.check.outputs.exists == 'false'
@@ -99,17 +130,30 @@ jobs:
         run: |
           cd backend; npm run lint --if-present; npm run test --if-present
 
+      - name: Audit backend
+        if: steps.check-backend.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          cd backend; npm audit --json > audit-report.json
+
+      - name: Upload backend audit report
+        if: steps.check-backend.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-audit-report
+          path: backend/audit-report.json
+
       - name: Skip backend
         if: steps.check-backend.outputs.exists == 'false'
         run: echo "No backend/package.json found — skipping backend job"
 
   integration:
-    name: Integration tests (Postgres service)
+    name: Integration tests (PostGIS migrations)
     runs-on: ubuntu-latest
     needs: [root]
     services:
       postgres:
-        image: postgres:15
+        image: postgis/postgis:15-3.3
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -128,20 +172,29 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install deps
+      - name: Install root deps
         run: npm ci
         shell: pwsh
 
       - name: Wait for Postgres
         run: |
           Write-Host "Waiting for Postgres to be ready...";
-          $retries = 0; while ($retries -lt 10) { if (pg_isready -h localhost -p 5432 -U postgres) { break } ; Start-Sleep -Seconds 2; $retries++ }; 
+          $retries = 0; while ($retries -lt 10) { if (pg_isready -h localhost -p 5432 -U postgres) { break } ; Start-Sleep -Seconds 2; $retries++ };
         shell: pwsh
 
       - name: Apply migrations
         run: |
           Write-Host "Applying migrations...";
-          Get-ChildItem migrations/*.sql | ForEach-Object { psql -h localhost -p 5432 -U postgres -d postgres -f $_.FullName }
+          psql -h localhost -p 5432 -U postgres -d postgres -f migrations/0001_enable_postgis.sql
+          psql -h localhost -p 5432 -U postgres -d postgres -f migrations/0002_core_inventory_finance.sql
+          psql -h localhost -p 5432 -U postgres -d postgres -f migrations/0003_operations_idempotency_and_rls.sql
+          psql -h localhost -p 5432 -U postgres -d postgres -f migrations/0004_fn_apply_treatment.sql
+          psql -h localhost -p 5432 -U postgres -d postgres -f migrations/0005_audit_logs_and_operations.sql
+        shell: pwsh
+
+      - name: Smoke test migrations
+        run: |
+          psql -h localhost -p 5432 -U postgres -d postgres -c "SELECT COUNT(*) FROM farms;"
         shell: pwsh
 
       - name: Run integration tests

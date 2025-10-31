@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Tasks API using D1
+// Handles CRUD operations for tasks using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    // Validate JWT
+  // Validate JWT (Cloudflare D1)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,52 +16,52 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('./_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    const userId = user.id;
 
     if (method === 'GET') {
-      // Return mock tasks data for testing
-      const mockTasks = [
-        {
-          id: 'task-1',
-          title: 'Plant corn seeds',
-          description: 'Plant corn seeds in North Field',
-          status: 'pending',
-          priority: 'high',
-          due_date: '2024-11-15T00:00:00Z',
-          created_at: '2024-10-30T10:00:00Z',
-          farm_name: 'Green Valley Farm',
-          assigned_to_name: 'John Farmer'
-        },
-        {
-          id: 'task-2',
-          title: 'Check irrigation system',
-          description: 'Inspect irrigation system in South Field',
-          status: 'in_progress',
-          priority: 'medium',
-          due_date: '2024-11-01T00:00:00Z',
-          created_at: '2024-10-28T14:30:00Z',
-          farm_name: 'Green Valley Farm',
-          assigned_to_name: null
-        }
-      ];
+      // List tasks for user's farms using D1
+      const query = `
+        SELECT
+          t.id, t.title, t.description, t.status, t.priority, t.due_date, t.created_at,
+          f.name as farm_name,
+          u.name as assigned_to_name
+        FROM tasks t
+        JOIN farms f ON t.farm_id = f.id
+        LEFT JOIN users u ON t.assigned_to = u.id
+        JOIN farm_members fm ON f.id = fm.farm_id
+        WHERE fm.user_id = ?
+        ORDER BY t.created_at DESC
+      `;
 
-      return new Response(JSON.stringify(mockTasks), {
+      const { results: tasks } = await env.DB.prepare(query)
+        .bind(userId)
+        .all();
+
+      if (!tasks) {
+        return new Response(JSON.stringify({ error: 'Database error' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify(tasks), {
         headers: { 'Content-Type': 'application/json' }
       });
 
     } else if (method === 'POST') {
-      // Mock task creation
+      // Create task
       const body = await request.json();
-      const { farm_id, title, description, priority, due_date } = body;
+      const { farm_id, title, description, priority, due_date, assigned_to } = body;
 
       if (!farm_id || !title) {
         return new Response(JSON.stringify({ error: 'Farm ID and title required' }), {
@@ -69,19 +70,57 @@ export async function onRequest(context) {
         });
       }
 
-      const mockTask = {
-        id: `task-${Date.now()}`,
-        title,
-        description: description || null,
-        status: 'pending',
-        priority: priority || 'medium',
-        due_date: due_date || null,
-        created_at: new Date().toISOString(),
-        farm_name: 'Mock Farm',
-        assigned_to_name: null
-      };
+      // Verify user has access to farm
+      const accessQuery = `
+        SELECT id FROM farm_members
+        WHERE farm_id = ? AND user_id = ?
+      `;
+      const { results: farmAccess } = await env.DB.prepare(accessQuery)
+        .bind(farm_id, userId)
+        .all();
 
-      return new Response(JSON.stringify(mockTask), {
+      if (!farmAccess || farmAccess.length === 0) {
+        return new Response(JSON.stringify({ error: 'Access denied' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Insert new task
+      const insertQuery = `
+        INSERT INTO tasks (farm_id, title, description, status, priority, due_date, assigned_to, created_by, created_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'))
+      `;
+
+      const result = await env.DB.prepare(insertQuery)
+        .bind(farm_id, title, description || null, priority || 'medium', due_date || null, assigned_to || null, userId)
+        .run();
+
+      if (!result.success) {
+        return new Response(JSON.stringify({ error: 'Failed to create task' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Get the created task
+      const newTaskId = result.meta.last_row_id;
+      const selectQuery = `
+        SELECT
+          t.id, t.title, t.description, t.status, t.priority, t.due_date, t.created_at,
+          f.name as farm_name,
+          u.name as assigned_to_name
+        FROM tasks t
+        JOIN farms f ON t.farm_id = f.id
+        LEFT JOIN users u ON t.assigned_to = u.id
+        WHERE t.id = ?
+      `;
+
+      const { results: newTask } = await env.DB.prepare(selectQuery)
+        .bind(newTaskId)
+        .all();
+
+      return new Response(JSON.stringify(newTask[0]), {
         status: 201,
         headers: { 'Content-Type': 'application/json' }
       });

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../hooks/useAuth';
 
 interface Animal {
   id: string;
@@ -12,16 +12,21 @@ interface Animal {
 }
 
 export function AnimalsPage() {
+  const { getAuthHeaders } = useAuth();
+
   const { data: animals, isLoading, error } = useQuery({
     queryKey: ['animals'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('animals')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const headers = await getAuthHeaders();
+      const response = await fetch('/api/animals', {
+        headers
+      });
 
-      if (error) throw error;
-      return data as Animal[];
+      if (!response.ok) {
+        throw new Error('Failed to fetch animals');
+      }
+
+      return response.json() as Promise<Animal[]>;
     }
   });
 

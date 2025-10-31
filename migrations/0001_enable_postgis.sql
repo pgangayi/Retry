@@ -1,8 +1,12 @@
--- 0001_enable_postgis.sql
--- Enable extensions required for PostGIS and UUID generation
--- Run on the Supabase/Postgres instance before applying spatial migrations.
+-- POSTGRES-ONLY MIGRATION (archived)
+-- NOTE: This file was originally intended for Supabase/Postgres and enables
+-- PostGIS/pgcrypto extensions. Cloudflare D1 does not support PostGIS or
+-- custom Postgres extensions. Do NOT run this against a D1 database.
+--
+-- If you are targeting Cloudflare D1, use `schema.sql` at the repository root
+-- and apply it with `wrangler d1 execute` as documented in project setup.
+--
+-- Keep Postgres-specific migrations in a separate archive or repository if
+-- you still need to maintain a Postgres deployment.
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-CREATE EXTENSION IF NOT EXISTS postgis;
-
--- Verify: SELECT extname FROM pg_extension WHERE extname IN ('postgis','pgcrypto');
+-- Original filename: 0001_enable_postgis.sql

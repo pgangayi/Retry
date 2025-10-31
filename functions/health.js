@@ -10,16 +10,12 @@ export async function onRequest(context) {
       checks: {}
     };
 
-    // Check Supabase connection
+    // Check D1 database connection
     try {
-      const response = await fetch(`${env.SUPABASE_URL}/rest/v1/`, {
-        headers: {
-          'apikey': env.SUPABASE_SERVICE_ROLE_KEY
-        }
-      });
-      checks.checks.supabase = response.ok ? 'healthy' : 'unhealthy';
+      const { results } = await env.DB.prepare("SELECT 1 as health_check").all();
+      checks.checks.database = results && results.length > 0 ? 'healthy' : 'unhealthy';
     } catch (error) {
-      checks.checks.supabase = 'unhealthy';
+      checks.checks.database = 'unhealthy';
     }
 
     // Check KV (if configured)

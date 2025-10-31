@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Animals API using D1
+// Handles CRUD operations for animals using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    // Validate JWT
+  // Validate JWT (Cloudflare D1)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,64 +16,52 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('./_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
-
-    // Use service role client for database operations
-    const dbClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    const userId = user.id;
 
     if (method === 'GET') {
-      // List animals for user's farms
-      const { data: animals, error } = await dbClient
-        .from('animals')
-        .select(`
-          id, tag, species, breed, sex, birth_date, status, notes, created_at,
-          farms!inner(name),
-          farm_members!inner(user_id),
-          sectors(name)
-        `)
-        .eq('farm_members.user_id', user.id)
-        .order('created_at', { ascending: false });
+      // List animals for user's farms using D1
+      const query = `
+        SELECT
+          a.id, a.tag, a.species, a.breed, a.sex, a.birth_date, a.status, a.notes, a.created_at,
+          f.name as farm_name,
+          s.name as sector_name
+        FROM animals a
+        JOIN farms f ON a.farm_id = f.id
+        LEFT JOIN sectors s ON a.sector_id = s.id
+        JOIN farm_members fm ON f.id = fm.farm_id
+        WHERE fm.user_id = ?
+        ORDER BY a.created_at DESC
+      `;
 
-      if (error) {
-        console.error('Database error:', error);
+      const { results: animals } = await env.DB.prepare(query)
+        .bind(userId)
+        .all();
+
+      if (!animals) {
         return new Response(JSON.stringify({ error: 'Database error' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      // Transform the data to match the expected format
-      const transformedAnimals = animals.map(animal => ({
-        id: animal.id,
-        tag: animal.tag,
-        species: animal.species,
-        breed: animal.breed,
-        sex: animal.sex,
-        birth_date: animal.birth_date,
-        status: animal.status,
-        notes: animal.notes,
-        created_at: animal.created_at,
-        farm_name: animal.farms?.name,
-        sector_name: animal.sectors?.name
-      }));
-
-      return new Response(JSON.stringify(transformedAnimals), {
+      return new Response(JSON.stringify(animals), {
         headers: { 'Content-Type': 'application/json' }
       });
 
     } else if (method === 'POST') {
       // Create animal
       const body = await request.json();
-      const { farm_id, tag, species, breed, sex, birth_date, notes } = body;
+      const { farm_id, tag, species, breed, sex, birth_date, notes, sector_id } = body;
 
       if (!farm_id || !tag || !species) {
         return new Response(JSON.stringify({ error: 'Farm ID, tag, and species required' }), {
@@ -82,43 +71,56 @@ export async function onRequest(context) {
       }
 
       // Verify user has access to farm
-      const { data: farmAccess, error: accessError } = await dbClient
-        .from('farm_members')
-        .select('id')
-        .eq('farm_id', farm_id)
-        .eq('user_id', user.id)
-        .single();
+      const accessQuery = `
+        SELECT id FROM farm_members
+        WHERE farm_id = ? AND user_id = ?
+      `;
+      const { results: farmAccess } = await env.DB.prepare(accessQuery)
+        .bind(farm_id, userId)
+        .all();
 
-      if (accessError || !farmAccess) {
+      if (!farmAccess || farmAccess.length === 0) {
         return new Response(JSON.stringify({ error: 'Access denied' }), {
           status: 403,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      const { data: newAnimal, error: insertError } = await dbClient
-        .from('animals')
-        .insert({
-          farm_id,
-          tag,
-          species,
-          breed: breed || null,
-          sex: sex || null,
-          birth_date: birth_date || null,
-          notes: notes || null
-        })
-        .select()
-        .single();
+      // Insert new animal
+      const insertQuery = `
+        INSERT INTO animals (farm_id, tag, species, breed, sex, birth_date, notes, sector_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))
+      `;
 
-      if (insertError) {
-        console.error('Insert error:', insertError);
+      const result = await env.DB.prepare(insertQuery)
+        .bind(farm_id, tag, species, breed || null, sex || null, birth_date || null, notes || null, sector_id || null)
+        .run();
+
+      if (!result.success) {
         return new Response(JSON.stringify({ error: 'Failed to create animal' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      return new Response(JSON.stringify(newAnimal), {
+      // Get the created animal
+      const newAnimalId = result.meta.last_row_id;
+      const selectQuery = `
+        SELECT
+          a.id, a.tag, a.species, a.breed, a.sex, a.birth_date, a.status, a.notes, a.created_at,
+          f.name as farm_name,
+          s.name as sector_name
+        FROM animals a
+        JOIN farms f ON a.farm_id = f.id
+        LEFT JOIN sectors s ON a.sector_id = s.id
+        WHERE a.id = ?
+      `;
+
+      const { results: newAnimal } = await env.DB.prepare(selectQuery)
+        .bind(newAnimalId)
+        .all();
+
+      return new Response(JSON.stringify(newAnimal[0]), {
         status: 201,
         headers: { 'Content-Type': 'application/json' }
       });

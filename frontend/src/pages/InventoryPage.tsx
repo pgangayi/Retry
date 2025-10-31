@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../hooks/useAuth';
 
 interface InventoryItem {
   id: string;
@@ -18,6 +18,7 @@ export function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [farmId] = useState<string>('test-farm-id'); // This would come from context/route
+  const { getAuthHeaders } = useAuth();
 
   useEffect(() => {
     if (farmId) {
@@ -27,13 +28,15 @@ export function InventoryPage() {
 
   const loadInventory = async () => {
     try {
-      const { data, error } = await supabase
-        .from('inventory_items')
-        .select('*')
-        .eq('farm_id', farmId);
+      const headers = await getAuthHeaders();
+      const response = await fetch(`/api/inventory?farm_id=${farmId}`, {
+        headers
+      });
 
-      if (error) throw error;
-      setItems(data || []);
+      if (response.ok) {
+        const data = await response.json();
+        setItems(data);
+      }
     } catch (error) {
       console.error('Error loading inventory:', error);
     } finally {

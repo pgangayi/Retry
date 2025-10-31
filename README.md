@@ -2,116 +2,105 @@
 
 ## Overview
 
-Farmers Boot is a progressive web application (PWA) designed for small-to-medium farmers to manage farms, fields, livestock, tasks, inventory, and users. Built with React + TypeScript (Vite frontend), Supabase (backend/database), and Cloudflare Pages + Functions for deployment.
+DELETED: README content removed as part of Supabase -> Cloudflare D1 migration.
+Please check project docs in the internal wiki or Cloudflare Pages dashboard.
 
 ## Features
 
-- **Farm Management**: Create and manage multiple farms with user roles (owner, manager, worker).
-- **Fields & Livestock**: Track fields, animals, health records, and treatments.
-- **Inventory & Finance**: Manage inventory items, transactions, and basic finance entries.
-- **Tasks**: Assign and track tasks across fields and animals.
-- **Offline Support**: PWA with service worker for offline viewing and queued operations.
-- **API**: Serverless endpoints for CRUD operations, with transactional treatment application.
 
 ## Architecture
 
 - **Frontend**: React + TypeScript, Vite build, PWA with service worker.
-- **Backend**: Supabase (Postgres + Auth + Storage + Realtime).
+- **Backend**: Cloudflare Pages Functions with D1 database and R2 storage.
+- **Database**: Cloudflare D1 (SQLite-compatible) with relational data structure.
+- **Storage**: Cloudflare R2 for file storage and assets.
 - **Deployment**: Cloudflare Pages (frontend) + Pages Functions (API).
-- **Database**: Postgres with PostGIS for spatial data, RLS policies for security.
+- **Authentication**: Cloudflare-based JWT auth.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js 18+
-- Supabase account and project
-- Cloudflare account (for deployment)
+- Cloudflare account (for D1, R2, and Pages deployment)
+- Wrangler CLI: `npm install -g wrangler`
 
 ### Local Development
 
-#### Option 1: Quick Setup (Recommended)
+#### Database Setup (D1)
 
-1. Run the automated setup:
-   ```powershell
-   # Windows
-   npm run setup:local:windows
-   
-   # Unix/Linux/macOS
-   npm run setup:local:unix
+1. Create local D1 database:
+   ```bash
+   npm run db:init
    ```
 
-2. Edit `.env` with your local Supabase values (uncomment the local section).
-
-3. Start development:
-   ```powershell
-   npm run dev:local  # Runs both frontend and functions locally
+2. Run migrations:
+   ```bash
+   npm run db:migrate
    ```
 
-#### Option 2: Manual Setup
-
-1. Install Supabase CLI:
-   ```powershell
-   npm install -g supabase
+3. (Optional) Seed database:
+   ```bash
+   npm run db:seed
    ```
 
-2. Start local Supabase:
-   ```powershell
-   supabase start
+#### Development Setup
+
+1. Install dependencies:
+   ```bash
+   npm install
+   cd frontend && npm install
    ```
 
-3. Copy and configure environment:
-   ```powershell
-   cp .env.example .env
-   # Edit .env with local values
-   ```
-
-4. Run migrations:
-   ```powershell
-   supabase db reset
-   ```
-
-5. Start development servers:
-   ```powershell
+2. Start development servers:
+   ```bash
    # Terminal 1: Frontend + Functions
    npm run dev:local
-   
+
    # Or separate terminals:
    # Terminal 1: Frontend only
    npm run dev
-   
+
    # Terminal 2: Functions only
    npm run dev:functions
    ```
 
-6. Visit: http://localhost:8788
+3. Visit: http://localhost:8788
 
 #### Available Scripts
 
 - `npm run dev:local` — Start frontend + functions locally
 - `npm run dev:functions` — Start functions only
-- `npm run setup:local:windows` — Windows setup script
-- `npm run setup:local:unix` — Unix setup script
+- `npm run db:init` — Create local D1 database
+- `npm run db:migrate` — Run D1 migrations
+- `npm run db:seed` — Seed database with sample data
+- `npm run db:studio` — Check database tables
 
 ### Deployment
 
 #### Local Development Deployment
 - Use `npm run dev:local` for full local development with functions
 - Uses `wrangler.toml` [env.local] configuration
-- Connects to local Supabase instance
+- Connects to local D1 database
 
 #### Production Deployment (Cloudflare Pages)
 
-1. Connect GitHub repo to Cloudflare Pages.
-2. Set build command: `npm run build` (output: `frontend/dist/`).
-3. Set environment variables in Cloudflare Pages dashboard:
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON_KEY`
+1. Create production D1 database:
+   ```bash
+   wrangler d1 create farmers-boot-prod
+   ```
+
+2. Update `wrangler.toml` with your production database IDs.
+
+3. Connect GitHub repo to Cloudflare Pages.
+
+4. Set build command: `npm run build` (output: `frontend/dist/`).
+
+5. Set environment variables in Cloudflare Pages dashboard:
    - `VITE_MAPBOX_TOKEN`
    - `SENTRY_DSN` (optional)
-4. Deploy; API endpoints available at `/api/*`.
+
+6. Deploy; API endpoints available at `/api/*`.
 
 #### Deployment Scripts
 
@@ -119,11 +108,27 @@ Farmers Boot is a progressive web application (PWA) designed for small-to-medium
 - `npm run deploy:windows` — Deploy to Cloudflare Pages (Windows)
 - `npm run build:ci` — Build with dummy env vars for CI testing
 
+### Database Schema
+
+The application uses the following main tables in D1:
+
+- `users` — User accounts
+- `farms` — Farm information
+- `farm_members` — User roles per farm
+- `animals` — Livestock records
+- `fields` — Field/crop management
+- `tasks` — Work assignments
+- `inventory` — Stock items
+- `finance_entries` — Income/expense tracking
+- `treatments` — Animal treatment records
+
+See `schema.sql` for the complete database schema.
+
 ### API Usage
 
 Example: Apply treatment
 
-```powershell
+```bash
 curl -X POST https://your-site.pages.dev/api/operations/apply-treatment \
   -H "Authorization: Bearer <user-jwt>" \
   -H "Idempotency-Key: <uuid>" \
@@ -140,9 +145,9 @@ curl -X POST https://your-site.pages.dev/api/operations/apply-treatment \
 ## Project Structure
 
 - `frontend/` — React app
-- `functions/api/` — Cloudflare Pages Functions
-- `supabase/migrations/` — DB migrations
-- `migrations/` — Original migration files
+- `functions/api/` — Cloudflare Pages Functions (D1-based)
+- `schema.sql` — D1 database schema
+- `wrangler.toml` — Cloudflare configuration
 - `.github/workflows/ci.yml` — CI pipeline
 
 ## Contributing

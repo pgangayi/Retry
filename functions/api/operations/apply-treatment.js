@@ -24,7 +24,7 @@ function validatePayload(payload) {
 }
 
 async function applyTreatment({ payload, deps = {} }) {
-  // deps.db is expected to be an object with methods: connect(), query(text, params), begin/commit/rollback helpers
+  // deps.db is expected to be a D1 database instance
   validatePayload(payload);
 
   const { db, idempotencyKey } = deps;
@@ -43,51 +43,52 @@ async function applyTreatment({ payload, deps = {} }) {
     };
   }
 
-  // Begin transaction - db is expected to provide a simple transaction API used in tests below
+  // D1 doesn't support transactions in the same way, so we'll use batch operations
   try {
-    await db.begin();
+    const statements = [];
 
-    const txResults = { inventoryTransactions: [] };
-
-    // For each item, lock/select for update and decrement if possible
+    // For each item, check and update inventory
     for (const it of payload.items) {
       // Query current qty for the inventory item
-      const res = await db.query('SELECT id, qty FROM inventory_items WHERE id = $1 FOR UPDATE', [it.inventoryItemId]);
-      if (!res || res.rowCount === 0) {
+      const stmt = db.prepare('SELECT id, qty FROM inventory_items WHERE id = ?');
+      const res = await stmt.bind(it.inventoryItemId).first();
+      if (!res) {
         throw { status: 400, message: `inventory item not found: ${it.inventoryItemId}` };
       }
-      const current = Number(res.rows[0].qty || 0);
+      const current = Number(res.qty || 0);
       if (current < it.qty && !payload.overrideIfInsufficient) {
-        // rollback and return 409 conflict
-        await db.rollback();
         return { status: 409, body: { message: 'insufficient inventory', inventoryItemId: it.inventoryItemId, available: current } };
       }
 
-      // perform update
-      await db.query('UPDATE inventory_items SET qty = qty - $1 WHERE id = $2', [it.qty, it.inventoryItemId]);
+      // Add update to statements
+      const updateStmt = db.prepare('UPDATE inventory_items SET qty = qty - ? WHERE id = ?');
+      statements.push(updateStmt.bind(it.qty, it.inventoryItemId));
 
-      // insert inventory transaction record
-      const insert = await db.query(
+      // Add inventory transaction insert to statements
+      const insertStmt = db.prepare(
         `INSERT INTO inventory_transactions (inventory_item_id, farm_id, qty_delta, unit, reason_type, created_by)
-         VALUES ($1, $2, $3, $4, 'treatment', $5) RETURNING id`,
-        [it.inventoryItemId, payload.farmId, -Math.abs(it.qty), it.unit || null, deps.userId || null]
+         VALUES (?, ?, ?, ?, 'treatment', ?) RETURNING id`
       );
-      txResults.inventoryTransactions.push(insert.rows[0].id);
+      statements.push(insertStmt.bind(it.inventoryItemId, payload.farmId, -Math.abs(it.qty), it.unit || null, deps.userId || null));
     }
 
-    // Insert a treatment record (simplified)
-    const treatment = await db.query(
+    // Add treatment insert to statements
+    const treatmentStmt = db.prepare(
       `INSERT INTO treatments (farm_id, target_type, target_id, notes, applied_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [payload.farmId, payload.targetType, payload.targetId, payload.notes || null, payload.appliedAt, deps.userId || null]
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
     );
+    statements.push(treatmentStmt.bind(payload.farmId, payload.targetType, payload.targetId, payload.notes || null, payload.appliedAt, deps.userId || null));
 
-    await db.commit();
+    // Execute batch
+    const batch = db.batch(statements);
+    const results = await batch.run();
 
-    return { status: 200, body: { treatmentId: treatment.rows[0].id, inventoryTransactionIds: txResults.inventoryTransactions } };
+    // Extract treatment ID from the last result
+    const treatmentResult = results[results.length - 1];
+    const treatmentId = treatmentResult.meta.last_row_id;
+
+    return { status: 200, body: { treatmentId, inventoryTransactionIds: [] } };
   } catch (err) {
-    // try to rollback if possible
-    try { if (db) await db.rollback(); } catch (e) { /* ignore */ }
     if (err && err.status) return { status: err.status, body: { message: err.message } };
     return { status: 500, body: { message: err && err.message ? err.message : String(err) } };
   }

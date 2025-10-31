@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Fields API using D1
+// Handles CRUD operations for fields using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    // Validate JWT
+  // Validate JWT (Cloudflare D1)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,48 +16,50 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('./_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    const userId = user.id;
 
     if (method === 'GET') {
-      // Return mock fields data for testing
-      const mockFields = [
-        {
-          id: 'field-1',
-          name: 'North Field',
-          area_hectares: 5.2,
-          crop_type: 'Corn',
-          notes: 'Main corn field',
-          created_at: '2024-01-15T10:00:00Z',
-          farm_name: 'Green Valley Farm'
-        },
-        {
-          id: 'field-2',
-          name: 'South Pasture',
-          area_hectares: 8.1,
-          crop_type: null,
-          notes: 'Grazing area',
-          created_at: '2024-02-01T14:30:00Z',
-          farm_name: 'Green Valley Farm'
-        }
-      ];
+      // List fields for user's farms using D1
+      const query = `
+        SELECT
+          f.id, f.name, f.area_hectares, f.crop_type, f.notes, f.created_at,
+          fm.name as farm_name
+        FROM fields f
+        JOIN farms fm ON f.farm_id = fm.id
+        JOIN farm_members fmem ON fm.id = fmem.farm_id
+        WHERE fmem.user_id = ?
+        ORDER BY f.created_at DESC
+      `;
 
-      return new Response(JSON.stringify(mockFields), {
+      const { results: fields } = await env.DB.prepare(query)
+        .bind(userId)
+        .all();
+
+      if (!fields) {
+        return new Response(JSON.stringify({ error: 'Database error' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify(fields), {
         headers: { 'Content-Type': 'application/json' }
       });
 
     } else if (method === 'POST') {
-      // Mock field creation
+      // Create field
       const body = await request.json();
-      const { farm_id, name } = body;
+      const { farm_id, name, area_hectares, crop_type, notes } = body;
 
       if (!farm_id || !name) {
         return new Response(JSON.stringify({ error: 'Farm ID and name required' }), {
@@ -65,17 +68,55 @@ export async function onRequest(context) {
         });
       }
 
-      const mockField = {
-        id: `field-${Date.now()}`,
-        name,
-        area_hectares: body.area_hectares || null,
-        crop_type: body.crop_type || null,
-        notes: body.notes || null,
-        created_at: new Date().toISOString(),
-        farm_name: 'Mock Farm'
-      };
+      // Verify user has access to farm
+      const accessQuery = `
+        SELECT id FROM farm_members
+        WHERE farm_id = ? AND user_id = ?
+      `;
+      const { results: farmAccess } = await env.DB.prepare(accessQuery)
+        .bind(farm_id, userId)
+        .all();
 
-      return new Response(JSON.stringify(mockField), {
+      if (!farmAccess || farmAccess.length === 0) {
+        return new Response(JSON.stringify({ error: 'Access denied' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Insert new field
+      const insertQuery = `
+        INSERT INTO fields (farm_id, name, area_hectares, crop_type, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `;
+
+      const result = await env.DB.prepare(insertQuery)
+        .bind(farm_id, name, area_hectares || null, crop_type || null, notes || null)
+        .run();
+
+      if (!result.success) {
+        return new Response(JSON.stringify({ error: 'Failed to create field' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Get the created field
+      const newFieldId = result.meta.last_row_id;
+      const selectQuery = `
+        SELECT
+          f.id, f.name, f.area_hectares, f.crop_type, f.notes, f.created_at,
+          fm.name as farm_name
+        FROM fields f
+        JOIN farms fm ON f.farm_id = fm.id
+        WHERE f.id = ?
+      `;
+
+      const { results: newField } = await env.DB.prepare(selectQuery)
+        .bind(newFieldId)
+        .all();
+
+      return new Response(JSON.stringify(newField[0]), {
         status: 201,
         headers: { 'Content-Type': 'application/json' }
       });

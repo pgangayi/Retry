@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../hooks/useAuth';
 
 interface InventoryItem {
   id: string;
@@ -21,6 +21,7 @@ interface InventoryListProps {
 export function InventoryList({ farmId }: InventoryListProps) {
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const { getAuthHeaders } = useAuth();
 
   useEffect(() => {
     loadInventory();
@@ -28,10 +29,9 @@ export function InventoryList({ farmId }: InventoryListProps) {
 
   const loadInventory = async () => {
     try {
-      const response = await fetch(`/api/inventory/items?farm_id=${farmId}`, {
-        headers: {
-          'Authorization': `Bearer ${supabase.auth.getSession().then(({ data }) => data.session?.access_token)}`
-        }
+      const headers = await getAuthHeaders();
+      const response = await fetch(`/api/inventory?farm_id=${farmId}`, {
+        headers
       });
 
       if (response.ok) {

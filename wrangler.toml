@@ -2,62 +2,56 @@
 # This file configures both local development and production deployment
 
 name = "farmers-boot"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 
-# Local development environment
-[env.local]
-# Local environment variables (can be overridden by .env file)
-# Supabase
-SUPABASE_URL = "http://localhost:54321"
-SUPABASE_SERVICE_ROLE_KEY = "your-local-service-role-key"
+# Pages Functions configuration
+pages_build_output_dir = "frontend/dist"
 
-# External services
-VITE_SUPABASE_URL = "http://localhost:54321"
-VITE_SUPABASE_ANON_KEY = "your-local-anon-key"
-VITE_MAPBOX_TOKEN = "your-mapbox-token"
+## Local D1 binding (so `env.DB` is a D1 binding during local dev)
+[[d1_databases]]
+binding = "DB"
+database_id = "106c9d2b-c97a-483e-9eff-e713150d8a9a"
+database_name = "farmers-boot-local"
 
-# Local development settings
-CF_PAGES_URL = "http://localhost:8788"
-
-# KV namespace for local development (optional)
-[[env.local.kv_namespaces]]
-binding = "RATE_LIMIT_KV_LOCAL"
-id = "local-kv-namespace"
-preview_id = "local-kv-namespace"
+# Preview environment (for testing)
+[env.preview]
+# Use production database for preview deployments
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "farmers-boot-prod"
+database_id = "96ba79d2-c66e-4421-9116-3d231666266c"
 
 # Production environment
 [env.production]
 # Environment variables for production
 # These should be set in Cloudflare Pages dashboard
 
-# Supabase
-SUPABASE_URL = "https://your-project.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
-
 # External services
-VITE_SUPABASE_URL = "https://your-project.supabase.co"
-VITE_SUPABASE_ANON_KEY = "your-anon-key"
 VITE_MAPBOX_TOKEN = "your-mapbox-token"
+
+# JWT Secret for authentication (set in Cloudflare Pages dashboard)
+JWT_SECRET = "your-production-jwt-secret-change-this"
 
 # Monitoring
 SENTRY_DSN = "your-sentry-dsn"
 
-# Webhooks
-WEBHOOK_SECRET = "your-webhook-secret"
-
-# Rate limiting
-RATE_LIMIT_KV = "your-kv-namespace-id"
-
 # Pages URL (auto-populated by Cloudflare)
 CF_PAGES_URL = "https://your-pages-url.pages.dev"
 
-[[env.production.kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "your-kv-namespace-id"
-preview_id = "your-preview-kv-namespace-id"
+# D1 Database for production
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "farmers-boot-prod"
+database_id = "96ba79d2-c66e-4421-9116-3d231666266c"
 
-# Function bindings for Pages Functions
-pages_build_output_dir = "frontend/dist"
+# R2 Storage for production (optional - commented out for now)
+# [[env.production.r2_buckets]]
+# binding = "STORAGE"
+# bucket_name = "farmers-boot-prod"
 
-# Pages Functions configuration
-functions = "functions"
+# KV Storage for rate limiting (optional - commented out for now)
+# [[env.production.kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "your-kv-namespace-id"
+# preview_id = "your-preview-kv-namespace-id"

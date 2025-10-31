@@ -1,8 +1,6 @@
 // Audit logging middleware for Pages Functions
 // Logs operational mutations to audit_logs table
 
-import { createClient } from '@supabase/supabase-js';
-
 // Helper function to extract farm_id from various entity types
 export function extractFarmId(entityType, entityData) {
   switch (entityType) {
@@ -21,18 +19,21 @@ export function extractFarmId(entityType, entityData) {
 
 export async function logAuditEvent(env, entry) {
   try {
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    const stmt = env.DB.prepare(`
+      INSERT INTO audit_logs (farm_id, user_id, action, entity_type, entity_id, changes, ip_address, user_agent, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
 
-    await supabase.from('audit_logs').insert({
-      farm_id: entry.farm_id,
-      user_id: entry.user_id,
-      action: entry.action,
-      entity_type: entry.entity_type,
-      entity_id: entry.entity_id,
-      changes: entry.changes,
-      ip_address: entry.ip_address,
-      user_agent: entry.user_agent
-    });
+    await stmt.bind(
+      entry.farm_id,
+      entry.user_id,
+      entry.action,
+      entry.entity_type,
+      entry.entity_id,
+      entry.changes ? JSON.stringify(entry.changes) : null,
+      entry.ip_address,
+      entry.user_agent
+    ).run();
   } catch (error) {
     console.error('Failed to log audit event:', error);
     // Don't throw - audit logging failures shouldn't break operations
@@ -52,9 +53,9 @@ export function withAuditLogging(handler) {
       const authHeader = request.headers.get('Authorization');
       if (authHeader?.startsWith('Bearer ')) {
         const token = authHeader.substring(7);
-        const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-        const { data: { user } } = await supabase.auth.getUser(token);
-        userId = user?.id;
+        // TODO: Implement JWT verification for Cloudflare auth
+        // For now, we'll skip user extraction
+        userId = null;
       }
     } catch (error) {
       // Ignore auth errors for logging

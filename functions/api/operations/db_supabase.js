@@ -1,57 +1,59 @@
-// Cloudflare-compatible database client using Supabase JS client
+// Cloudflare-compatible database client using D1
 // This replaces db_pg.js for Cloudflare Functions runtime
 
-import { createClient } from '@supabase/supabase-js';
-
-function createSupabaseClient(url, serviceRoleKey) {
-  const supabase = createClient(url, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  });
-
+function createD1Client(db) {
   return {
     // Basic query method that mimics pg client interface
     query: async (text, params = []) => {
-      // For simple SELECT queries, we can use Supabase's RPC or direct table access
-      // This is a simplified implementation - complex queries may need RPC functions
-      if (text.toLowerCase().includes('select')) {
-        // Extract table name from query (very basic parsing)
-        const tableMatch = text.match(/from\s+(\w+)/i);
-        if (tableMatch) {
-          const table = tableMatch[1];
-          const result = await supabase.from(table).select('*');
-          return {
-            rows: result.data || [],
-            rowCount: result.data?.length || 0
-          };
+      // For D1, we need to convert SQL queries to D1 format
+      // This is a simplified implementation - complex queries may need adjustments
+      try {
+        const stmt = db.prepare(text);
+        if (params && params.length > 0) {
+          // Bind parameters if provided
+          for (let i = 0; i < params.length; i++) {
+            stmt.bind(params[i], i);
+          }
         }
-      }
 
-      // For complex queries, we'd need to use RPC functions
-      // For now, throw an error to indicate this needs to be implemented
-      throw new Error(`Complex query not supported in Cloudflare runtime: ${text}`);
+        const result = await stmt.all();
+        return {
+          rows: result.results || [],
+          rowCount: result.results?.length || 0
+        };
+      } catch (error) {
+        throw new Error(`D1 query failed: ${error.message}`);
+      }
     },
 
-    // Transaction methods (simplified - Supabase handles transactions differently)
-    begin: async () => { /* Supabase handles transactions at RPC level */ },
-    commit: async () => { /* Supabase handles transactions at RPC level */ },
-    rollback: async () => { /* Supabase handles transactions at RPC level */ },
+    // Transaction methods for D1
+    begin: async () => {
+      // D1 handles transactions differently - we'll use batch operations
+      return db.batch([]);
+    },
 
-    // Connection methods (no-op for Supabase)
+    commit: async (batch) => {
+      if (batch) {
+        await batch.run();
+      }
+    },
+
+    rollback: async () => {
+      // D1 doesn't support rollbacks in the same way - this is a no-op
+    },
+
+    // Connection methods (no-op for D1)
     connect: async () => {},
     end: async () => {}
   };
 }
 
 export function getDbClient(env) {
-  const SUPABASE_URL = env.SUPABASE_URL;
-  const SERVICE_ROLE = env.SUPABASE_SERVICE_ROLE_KEY;
+  const db = env.DB;
 
-  if (!SUPABASE_URL || !SERVICE_ROLE) {
-    throw new Error('Missing Supabase credentials in environment');
+  if (!db) {
+    throw new Error('Missing D1 database binding in environment');
   }
 
-  return createSupabaseClient(SUPABASE_URL, SERVICE_ROLE);
+  return createD1Client(db);
 }

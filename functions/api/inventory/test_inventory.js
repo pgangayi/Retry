@@ -9,7 +9,7 @@ async function testInventoryAPI() {
 
   // Test GET inventory items
   try {
-    const response = await fetch(`${baseURL}/api/inventory/items?farm_id=test-farm-id`, {
+  const response = await fetch(`${baseURL}/api/inventory?farm_id=test-farm-id`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -27,7 +27,7 @@ async function testInventoryAPI() {
 
   // Test POST create inventory item
   try {
-    const response = await fetch(`${baseURL}/api/inventory/items`, {
+  const response = await fetch(`${baseURL}/api/inventory`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

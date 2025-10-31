@@ -11,32 +11,49 @@ function createMockDb({ inventory = {} } = {}) {
     begin: async () => { inTransaction = true; },
     commit: async () => { inTransaction = false; },
     rollback: async () => { inTransaction = false; },
-    query: async (text, params) => {
-      // very small SQL parser for our limited calls
-      if (text.startsWith('SELECT id, qty FROM inventory_items')) {
-        const id = params[0];
-        const qty = state.inventory[id];
-        if (typeof qty === 'undefined') return { rowCount: 0, rows: [] };
-        return { rowCount: 1, rows: [{ id, qty }] };
+    prepare: (sql) => ({
+      bind: (...params) => ({
+        run: async () => {
+          // Mock D1-style execution
+          if (sql.includes('UPDATE inventory_items')) {
+            const qty = params[0];
+            const id = params[1];
+            state.inventory[id] = (state.inventory[id] || 0) - qty;
+            return { success: true };
+          }
+          if (sql.includes('INSERT INTO inventory_transactions')) {
+            const id = `tx_${state.inventoryTransactions.length + 1}`;
+            state.inventoryTransactions.push({ id, params });
+            return { meta: { last_row_id: id } };
+          }
+          if (sql.includes('INSERT INTO treatments')) {
+            const id = `t_${state.treatments.length + 1}`;
+            state.treatments.push({ id, params });
+            return { meta: { last_row_id: id } };
+          }
+          return { success: true };
+        },
+        first: async () => {
+          if (sql.includes('SELECT id, qty FROM inventory_items')) {
+            const id = params[0];
+            const qty = state.inventory[id];
+            if (typeof qty === 'undefined') return null;
+            return { id, qty };
+          }
+          return null;
+        }
+      })
+    }),
+    batch: (statements) => ({
+      run: async () => {
+        const results = [];
+        for (const stmt of statements) {
+          const result = await stmt.run();
+          results.push(result);
+        }
+        return results;
       }
-      if (text.startsWith('UPDATE inventory_items')) {
-        const qty = params[0]; // amount to subtract
-        const id = params[1];
-        state.inventory[id] = (state.inventory[id] || 0) - qty;
-        return { rowCount: 1 };
-      }
-      if (text.startsWith('INSERT INTO inventory_transactions')) {
-        const id = `tx_${state.inventoryTransactions.length + 1}`;
-        state.inventoryTransactions.push({ id, params });
-        return { rows: [{ id }], rowCount: 1 };
-      }
-      if (text.startsWith('INSERT INTO treatments')) {
-        const id = `t_${state.treatments.length + 1}`;
-        state.treatments.push({ id, params });
-        return { rows: [{ id }], rowCount: 1 };
-      }
-      return { rowCount: 0, rows: [] };
-    },
+    }),
     _state: state
   };
 }

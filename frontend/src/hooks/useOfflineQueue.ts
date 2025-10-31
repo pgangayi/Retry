@@ -1,211 +1,245 @@
 import { useEffect } from 'react';
-import Dexie from 'dexie';
+import Dexie, { Table } from 'dexie';
 import { useOfflineQueueStore } from '../stores/offlineQueueStore';
 
-interface OfflineOperation {
+// Define IndexedDB schema for offline-first functionality
+export interface SyncOperation {
   id?: number;
-  type: 'create_inventory_item' | 'update_inventory_item' | 'delete_inventory_item' | 'apply_treatment';
-  payload: any;
-  timestamp: number;
-  retryCount: number;
-  status: 'pending' | 'syncing' | 'failed' | 'conflict';
+  operation: 'create' | 'update' | 'delete';
+  entityType: string;
+  entityId: string;
+  data: Record<string, unknown>;
+  createdAt: number;
+  status: 'pending' | 'syncing' | 'synced' | 'failed';
+  retries: number;
   error?: string;
-  conflictData?: any;
 }
 
-class OfflineQueueDB extends Dexie {
-  operations: Dexie.Table<OfflineOperation, number>;
+export interface Farm {
+  id: string;
+  name: string;
+  location?: Record<string, unknown>;
+  timezone?: string;
+  currency?: string;
+  settings?: Record<string, unknown>;
+  ownerId: string;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+export interface Field {
+  id: string;
+  farmId: string;
+  name: string;
+  areaHectares?: number;
+  soilType?: string;
+  notes?: string;
+  boundary?: Record<string, unknown>;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+export interface Sector {
+  id: string;
+  fieldId: string;
+  name: string;
+  geom?: Record<string, unknown>;
+  cropType?: string;
+  plantingDate?: string;
+  expectedHarvest?: string;
+  notes?: string;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+export interface Animal {
+  id: string;
+  farmId: string;
+  tag: string;
+  species: string;
+  breed?: string;
+  sex?: 'male' | 'female' | 'unknown';
+  birthDate?: string;
+  currentSectorId?: string;
+  status: 'active' | 'sold' | 'deceased' | 'quarantine';
+  notes?: string;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+export interface Task {
+  id: string;
+  farmId: string;
+  title: string;
+  description?: string;
+  assignedTo?: string;
+  relatedEntityType?: 'field' | 'sector' | 'animal' | 'crop_cycle';
+  relatedEntityId?: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  dueDate?: string;
+  completedAt?: string;
+  createdBy: string;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+export interface InventoryItem {
+  id: string;
+  farmId: string;
+  name: string;
+  category: string;
+  sku?: string;
+  unit: string;
+  quantityOnHand: number;
+  reorderThreshold?: number;
+  unitCost?: number;
+  supplier?: string;
+  notes?: string;
+  createdAt: string;
+  lastSyncedAt?: number;
+}
+
+class FarmDB extends Dexie {
+  farms!: Table<Farm>;
+  fields!: Table<Field>;
+  sectors!: Table<Sector>;
+  animals!: Table<Animal>;
+  tasks!: Table<Task>;
+  inventory!: Table<InventoryItem>;
+  syncQueue!: Table<SyncOperation>;
 
   constructor() {
-    super('FarmersBootOffline');
-    this.version(2).stores({
-      operations: '++id, type, timestamp, retryCount, status'
+    super('FarmersBootDB');
+
+    this.version(1).stores({
+      farms: 'id, ownerId, lastSyncedAt',
+      fields: 'id, farmId, lastSyncedAt',
+      sectors: 'id, fieldId, lastSyncedAt',
+      animals: 'id, farmId, currentSectorId, status, lastSyncedAt',
+      tasks: 'id, farmId, assignedTo, status, dueDate, lastSyncedAt',
+      inventory: 'id, farmId, lastSyncedAt',
+      syncQueue: '++id, operation, entityType, entityId, createdAt, status',
     });
-    this.operations = this.table('operations');
   }
 }
 
-const db = new OfflineQueueDB();
+export const db = new FarmDB();
 
-export function useOfflineQueue() {
-  const { isOnline, queueLength, conflicts, setIsOnline, updateQueueStats } = useOfflineQueueStore();
+// Sync manager for offline operations
+class SyncManager {
+  private isSyncing = false;
 
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    // Initial queue length and conflicts
-    updateStats();
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  const updateStats = async () => {
-    const count = await db.operations.where('status').equals('pending').count();
-    const conflictOps = await db.operations.where('status').equals('conflict').toArray();
-    updateQueueStats(count, conflictOps);
-  };
-
-  const addToQueue = async (type: OfflineOperation['type'], payload: any) => {
-    await db.operations.add({
-      type,
-      payload,
-      timestamp: Date.now(),
-      retryCount: 0,
-      status: 'pending'
+  async queueOperation(op: Omit<SyncOperation, 'id' | 'status' | 'retries'>): Promise<void> {
+    await db.syncQueue.add({
+      ...op,
+      status: 'pending',
+      retries: 0,
     });
-    updateStats();
-  };
 
-  const processQueue = async () => {
-    if (!isOnline) return;
-
-    const operations = await db.operations
-      .where('status').equals('pending')
-      .sortBy('timestamp');
-
-    for (const op of operations) {
-      try {
-        await db.operations.update(op.id!, { status: 'syncing' });
-
-        const result = await processOperation(op);
-
-        if (result.success) {
-          await db.operations.delete(op.id!);
-        } else if (result.conflict) {
-          await db.operations.update(op.id!, {
-            status: 'conflict',
-            error: result.error,
-            conflictData: result.conflictData
-          });
-        } else {
-          await db.operations.update(op.id!, {
-            status: 'failed',
-            retryCount: op.retryCount + 1,
-            error: result.error
-          });
-        }
-      } catch (error) {
-        await db.operations.update(op.id!, {
-          status: 'failed',
-          retryCount: op.retryCount + 1,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+    // Try to sync immediately if online
+    if (navigator.onLine) {
+      this.sync();
     }
+  }
 
-    updateStats();
-  };
-
-  const processOperation = async (op: OfflineOperation) => {
-    const token = localStorage.getItem('supabase.auth.token');
-    if (!token) return { success: false, error: 'No auth token' };
-
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${JSON.parse(token).access_token}`
-    };
+  async sync(): Promise<void> {
+    if (this.isSyncing) return;
+    this.isSyncing = true;
 
     try {
-      switch (op.type) {
-        case 'create_inventory_item':
-          const createRes = await fetch('/api/inventory/items', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(op.payload)
-          });
-          if (createRes.status === 409) {
-            const conflictData = await createRes.json();
-            return { success: false, conflict: true, error: 'Item already exists', conflictData };
-          }
-          if (!createRes.ok) throw new Error(`HTTP ${createRes.status}`);
-          return { success: true };
+      const pending = await db.syncQueue
+        .where('status')
+        .equals('pending')
+        .or('status')
+        .equals('failed')
+        .filter(op => op.retries < 3)
+        .sortBy('createdAt');
 
-        case 'update_inventory_item':
-          const updateRes = await fetch(`/api/inventory/items/${op.payload.id}`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify(op.payload)
+      for (const op of pending) {
+        try {
+          await this.syncOperation(op);
+          await db.syncQueue.update(op.id!, { status: 'synced' });
+        } catch (error) {
+          await db.syncQueue.update(op.id!, {
+            status: 'failed',
+            retries: op.retries + 1,
+            error: error instanceof Error ? error.message : 'Unknown error',
           });
-          if (updateRes.status === 409) {
-            const conflictData = await updateRes.json();
-            return { success: false, conflict: true, error: 'Item was modified by another user', conflictData };
-          }
-          if (!updateRes.ok) throw new Error(`HTTP ${updateRes.status}`);
-          return { success: true };
-
-        case 'delete_inventory_item':
-          const deleteRes = await fetch(`/api/inventory/items/${op.payload.id}`, {
-            method: 'DELETE',
-            headers
-          });
-          if (!deleteRes.ok) throw new Error(`HTTP ${deleteRes.status}`);
-          return { success: true };
-
-        case 'apply_treatment':
-          const treatmentRes = await fetch('/api/operations/apply-treatment', {
-            method: 'POST',
-            headers: {
-              ...headers,
-              'Idempotency-Key': op.payload.idempotencyKey || `offline-${op.timestamp}`
-            },
-            body: JSON.stringify(op.payload)
-          });
-          if (treatmentRes.status === 409) {
-            const conflictData = await treatmentRes.json();
-            return { success: false, conflict: true, error: 'Insufficient inventory', conflictData };
-          }
-          if (!treatmentRes.ok) throw new Error(`HTTP ${treatmentRes.status}`);
-          return { success: true };
-
-        default:
-          throw new Error(`Unknown operation type: ${op.type}`);
+        }
       }
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.isSyncing = false;
     }
-  };
+  }
 
-  const resolveConflict = async (opId: number, resolution: 'overwrite' | 'discard' | 'merge', updatedPayload?: any) => {
-    const op = await db.operations.get(opId);
-    if (!op) return;
+  private async syncOperation(op: SyncOperation): Promise<void> {
+    const endpoint = `/api/${op.entityType}${op.operation === 'create' ? '' : '/' + op.entityId}`;
+    const method = {
+      create: 'POST',
+      update: 'PATCH',
+      delete: 'DELETE',
+    }[op.operation];
 
-    if (resolution === 'discard') {
-      await db.operations.delete(opId);
-    } else if (resolution === 'overwrite') {
-      await db.operations.update(opId, {
-        status: 'pending',
-        payload: updatedPayload || op.payload,
-        retryCount: 0,
-        error: undefined,
-        conflictData: undefined
-      });
-    } else if (resolution === 'merge') {
-      // For merge, we'd need specific logic per operation type
-      // For now, treat as overwrite
-      await db.operations.update(opId, {
-        status: 'pending',
-        payload: updatedPayload || op.payload,
-        retryCount: 0,
-        error: undefined,
-        conflictData: undefined
-      });
+    const response = await fetch(endpoint, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${await this.getAuthToken()}`,
+      },
+      body: op.operation !== 'delete' ? JSON.stringify(op.data) : undefined,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'Sync failed');
     }
 
-    updateStats();
-  };
+    const result = await response.json();
+
+    // Update local record with server data
+    if (op.operation === 'create' || op.operation === 'update') {
+      await (db as any)[op.entityType].put(result.data);
+    } else if (op.operation === 'delete') {
+      await (db as any)[op.entityType].delete(op.entityId);
+    }
+  }
+
+  private async getAuthToken(): Promise<string> {
+    // TODO: Implement token retrieval for Cloudflare auth
+    // For now, return empty string
+    return '';
+  }
+}
+
+export const syncManager = new SyncManager();
+
+// Listen for online event
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    syncManager.sync();
+  });
+}
+
+export function useOfflineQueue() {
+  const { isOnline, queueLength, conflicts, resolveConflict } = useOfflineQueueStore();
 
   useEffect(() => {
-    if (isOnline && queueLength > 0) {
-      processQueue();
+    // Initialize sync on mount
+    if (navigator.onLine) {
+      syncManager.sync();
     }
-  }, [isOnline, queueLength]);
+  }, []);
 
-  return { addToQueue, queueLength, isOnline, conflicts, resolveConflict };
+  const queueOperation = async (operation: Omit<SyncOperation, 'id' | 'status' | 'retries'>) => {
+    await syncManager.queueOperation(operation);
+  };
+
+  return {
+    queueOperation,
+    isOnline,
+    queueLength,
+    conflicts,
+    resolveConflict,
+  };
 }

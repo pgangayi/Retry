@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+build/
+public/sw.js
+public/workbox-*.js
+frontend/dist
+*.d.ts
+node_modules/
+dist/
+dist/*
+build/
+coverage/
+*.log
+.idea/
+.vscode/
+*.local

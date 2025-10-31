@@ -1,0 +1,10 @@
+[
+  {
+    "type": "console.warn",
+    "text": "Error while trying to use the following icon from the Manifest: https://e2a31fb2.farmers-boot.pages.dev/icons/icon-192.png (Download error or resource isn't a valid image)",
+    "args": [],
+    "location": {
+      "url": "https://e2a31fb2.farmers-boot.pages.dev/"
+    }
+  }
+]

@@ -13,6 +13,7 @@ import { Route as TasksRouteImport } from './routes/tasks'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as QueueRouteImport } from './routes/queue'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as FieldsRouteImport } from './routes/fields'
 import { Route as FarmsRouteImport } from './routes/farms'
 import { Route as AnimalsRouteImport } from './routes/animals'
@@ -36,6 +37,11 @@ const QueueRoute = QueueRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InventoryRoute = InventoryRouteImport.update({
+  id: '/inventory',
+  path: '/inventory',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FieldsRoute = FieldsRouteImport.update({
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/animals': typeof AnimalsRoute
   '/farms': typeof FarmsRoute
   '/fields': typeof FieldsRoute
+  '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/queue': typeof QueueRoute
   '/signup': typeof SignupRoute
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/animals': typeof AnimalsRoute
   '/farms': typeof FarmsRoute
   '/fields': typeof FieldsRoute
+  '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/queue': typeof QueueRoute
   '/signup': typeof SignupRoute
@@ -85,6 +93,7 @@ export interface FileRoutesById {
   '/animals': typeof AnimalsRoute
   '/farms': typeof FarmsRoute
   '/fields': typeof FieldsRoute
+  '/inventory': typeof InventoryRoute
   '/login': typeof LoginRoute
   '/queue': typeof QueueRoute
   '/signup': typeof SignupRoute
@@ -97,6 +106,7 @@ export interface FileRouteTypes {
     | '/animals'
     | '/farms'
     | '/fields'
+    | '/inventory'
     | '/login'
     | '/queue'
     | '/signup'
@@ -107,6 +117,7 @@ export interface FileRouteTypes {
     | '/animals'
     | '/farms'
     | '/fields'
+    | '/inventory'
     | '/login'
     | '/queue'
     | '/signup'
@@ -117,6 +128,7 @@ export interface FileRouteTypes {
     | '/animals'
     | '/farms'
     | '/fields'
+    | '/inventory'
     | '/login'
     | '/queue'
     | '/signup'
@@ -128,6 +140,7 @@ export interface RootRouteChildren {
   AnimalsRoute: typeof AnimalsRoute
   FarmsRoute: typeof FarmsRoute
   FieldsRoute: typeof FieldsRoute
+  InventoryRoute: typeof InventoryRoute
   LoginRoute: typeof LoginRoute
   QueueRoute: typeof QueueRoute
   SignupRoute: typeof SignupRoute
@@ -162,6 +175,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/inventory': {
+      id: '/inventory'
+      path: '/inventory'
+      fullPath: '/inventory'
+      preLoaderRoute: typeof InventoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/fields': {
@@ -200,6 +220,7 @@ const rootRouteChildren: RootRouteChildren = {
   AnimalsRoute: AnimalsRoute,
   FarmsRoute: FarmsRoute,
   FieldsRoute: FieldsRoute,
+  InventoryRoute: InventoryRoute,
   LoginRoute: LoginRoute,
   QueueRoute: QueueRoute,
   SignupRoute: SignupRoute,

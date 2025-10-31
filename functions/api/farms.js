@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Farms API using D1
+// Handles CRUD operations for farms using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    // Validate JWT
+  // Validate JWT (Cloudflare D1)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,30 +16,32 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('./_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
-
-    // Use service role client for database operations
-    const dbClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    const userId = user.id;
 
     if (method === 'GET') {
-      // List farms for user
-      const { data: farms, error } = await dbClient
-        .from('farms')
-        .select('id, name, location, area_hectares, created_at')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+      // List farms for user using D1
+      const query = `
+        SELECT id, name, location, area_hectares, created_at
+        FROM farms
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+      `;
 
-      if (error) {
-        console.error('Database error:', error);
+      const { results: farms } = await env.DB.prepare(query)
+        .bind(userId)
+        .all();
+
+      if (!farms) {
         return new Response(JSON.stringify({ error: 'Database error' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
@@ -61,26 +64,36 @@ export async function onRequest(context) {
         });
       }
 
-      const { data: newFarm, error: insertError } = await dbClient
-        .from('farms')
-        .insert({
-          user_id: user.id,
-          name,
-          location,
-          area_hectares: area_hectares || null
-        })
-        .select()
-        .single();
+      // Insert new farm
+      const insertQuery = `
+        INSERT INTO farms (user_id, name, location, area_hectares, created_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+      `;
 
-      if (insertError) {
-        console.error('Insert error:', insertError);
+      const result = await env.DB.prepare(insertQuery)
+        .bind(userId, name, location, area_hectares || null)
+        .run();
+
+      if (!result.success) {
         return new Response(JSON.stringify({ error: 'Failed to create farm' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      return new Response(JSON.stringify(newFarm), {
+      // Get the created farm
+      const newFarmId = result.meta.last_row_id;
+      const selectQuery = `
+        SELECT id, name, location, area_hectares, created_at
+        FROM farms
+        WHERE id = ?
+      `;
+
+      const { results: newFarm } = await env.DB.prepare(selectQuery)
+        .bind(newFarmId)
+        .all();
+
+      return new Response(JSON.stringify(newFarm[0]), {
         status: 201,
         headers: { 'Content-Type': 'application/json' }
       });

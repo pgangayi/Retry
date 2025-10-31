@@ -1,7 +1,8 @@
-import { createClient } from '@supabase/supabase-js';
+import { AuthUtils } from '../_auth.js';
 
 export async function onRequestPost(context) {
   const { request, env } = context;
+  const auth = new AuthUtils(env);
 
   try {
     const body = await request.json();
@@ -14,25 +15,48 @@ export async function onRequestPost(context) {
       });
     }
 
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
+    // Get user from database
+    const { results } = await env.DB.prepare(
+      'SELECT id, email, name, password_hash, created_at FROM users WHERE email = ?'
+    ).bind(email).run();
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
+    if (results.length === 0) {
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
+    const user = results[0];
+
+    // Verify password
+    const isValidPassword = await auth.verifyPassword(password, user.password_hash);
+    if (!isValidPassword) {
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Create session and issue tokens
+    const userAgent = request.headers.get('user-agent') || '';
+    const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || '';
+    const { sid, refreshToken } = await auth.createSession(user.id, userAgent, ip);
+
+    const accessToken = auth.generateAccessToken(user.id, user.email, sid, 60 * 15); // 15m
+
+    // Set refresh token cookie (sid.token) — server manages rotation
+    const refreshCookie = `${sid}.${refreshToken}`;
+
+    const { password_hash, ...userWithoutPassword } = user;
     return new Response(JSON.stringify({
-      user: data.user,
-      session: data.session,
+      user: userWithoutPassword,
+      accessToken,
     }), {
-      headers: { 'Content-Type': 'application/json' }
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': `refresh=${refreshCookie}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=${60 * 60 * 24 * 30}`
+      }
     });
 
   } catch (error) {

@@ -1,3 +1,23 @@
+-- POSTGRES-ONLY MIGRATION (archived)
+-- NOTE: This file contained a Postgres stored procedure (PL/pgSQL) used to
+-- perform transactional treatment application. Cloudflare D1 does not support
+-- server-side stored procedures in PL/pgSQL. The transactional logic is
+-- implemented in application code (`functions/api/operations/apply-treatment.js`)
+-- which uses D1-compatible batch operations.
+
+-- Original filename: 0004_fn_apply_treatment.sql
+
+-- Create a PL/pgSQL function `apply_treatment(payload jsonb, user_id uuid, idempotency_key text)`
+-- that performs the transactional treatment application using server-side Postgres logic.
+
+-- CREATE OR REPLACE FUNCTION apply_treatment(_payload jsonb)
+-- RETURNS jsonb LANGUAGE plpgsql AS $$
+-- DECLARE
+--   -- Implementation omitted for brevity; Postgres-only stored function using transactions
+-- BEGIN
+--   RETURN jsonb_build_object('status','ok');
+-- END;
+-- $$;
 -- 0004_fn_apply_treatment.sql
 -- Create a PL/pgSQL function `apply_treatment(payload jsonb, user_id uuid, idempotency_key text)`
 -- that performs the transactional treatment application using server-side Postgres logic.

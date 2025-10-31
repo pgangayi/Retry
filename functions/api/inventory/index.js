@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Cloudflare Pages Function for Inventory API using D1
+// Handles CRUD operations for inventory items using Cloudflare D1 database
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -6,7 +7,7 @@ export async function onRequest(context) {
   const method = request.method;
 
   try {
-    // Validate JWT
+  // Validate JWT (Cloudflare D1)
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -15,76 +16,114 @@ export async function onRequest(context) {
       });
     }
 
-    const token = authHeader.substring(7);
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Invalid token' }), {
+    // Verify and extract user from token
+    const { AuthUtils } = await import('../_auth.js');
+    const auth = new AuthUtils(env);
+    const user = await auth.getUserFromToken(request);
+    if (!user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    const userId = user.id;
 
     if (method === 'GET') {
-      // Return mock inventory data for testing
-      const mockInventory = [
-        {
-          id: 'inv-1',
-          name: 'Corn Seeds',
-          category: 'Seeds',
-          quantity: 150,
-          unit: 'kg',
-          min_stock_level: 50,
-          current_stock_level: 150,
-          location: 'Warehouse A',
-          expiry_date: '2025-06-01T00:00:00Z',
-          created_at: '2024-10-01T10:00:00Z'
-        },
-        {
-          id: 'inv-2',
-          name: 'Fertilizer',
-          category: 'Chemicals',
-          quantity: 75,
-          unit: 'bags',
-          min_stock_level: 20,
-          current_stock_level: 75,
-          location: 'Warehouse B',
-          expiry_date: null,
-          created_at: '2024-09-15T14:30:00Z'
-        }
-      ];
+      // List inventory items for user's farms using D1
+      const query = `
+        SELECT
+          i.id, i.name, i.category, i.quantity, i.unit, i.min_stock_level,
+          i.current_stock_level, i.location, i.expiry_date, i.created_at
+        FROM inventory i
+        JOIN farms f ON i.farm_id = f.id
+        JOIN farm_members fm ON f.id = fm.farm_id
+        WHERE fm.user_id = ?
+        ORDER BY i.created_at DESC
+      `;
 
-      return new Response(JSON.stringify(mockInventory), {
+      const { results: inventory } = await env.DB.prepare(query)
+        .bind(userId)
+        .all();
+
+      if (!inventory) {
+        return new Response(JSON.stringify({ error: 'Database error' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify(inventory), {
         headers: { 'Content-Type': 'application/json' }
       });
 
     } else if (method === 'POST') {
-      // Mock inventory item creation
+      // Create inventory item
       const body = await request.json();
-      const { name, category, quantity, unit, min_stock_level } = body;
+      const { farm_id, name, category, quantity, unit, min_stock_level, location, expiry_date } = body;
 
-      if (!name || !category) {
-        return new Response(JSON.stringify({ error: 'Name and category required' }), {
+      if (!farm_id || !name || !category) {
+        return new Response(JSON.stringify({ error: 'Farm ID, name and category required' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      const mockItem = {
-        id: `inv-${Date.now()}`,
-        name,
-        category,
-        quantity: quantity || 0,
-        unit: unit || 'units',
-        min_stock_level: min_stock_level || 10,
-        current_stock_level: quantity || 0,
-        location: 'Warehouse A',
-        expiry_date: null,
-        created_at: new Date().toISOString()
-      };
+      // Verify user has access to farm
+      const accessQuery = `
+        SELECT id FROM farm_members
+        WHERE farm_id = ? AND user_id = ?
+      `;
+      const { results: farmAccess } = await env.DB.prepare(accessQuery)
+        .bind(farm_id, userId)
+        .all();
 
-      return new Response(JSON.stringify(mockItem), {
+      if (!farmAccess || farmAccess.length === 0) {
+        return new Response(JSON.stringify({ error: 'Access denied' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Insert new inventory item
+      const insertQuery = `
+        INSERT INTO inventory (farm_id, name, category, quantity, unit, min_stock_level, current_stock_level, location, expiry_date, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `;
+
+      const result = await env.DB.prepare(insertQuery)
+        .bind(
+          farm_id,
+          name,
+          category,
+          quantity || 0,
+          unit || 'units',
+          min_stock_level || 10,
+          quantity || 0,
+          location || null,
+          expiry_date || null
+        )
+        .run();
+
+      if (!result.success) {
+        return new Response(JSON.stringify({ error: 'Failed to create inventory item' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Get the created item
+      const newItemId = result.meta.last_row_id;
+      const selectQuery = `
+        SELECT id, name, category, quantity, unit, min_stock_level, current_stock_level, location, expiry_date, created_at
+        FROM inventory
+        WHERE id = ?
+      `;
+
+      const { results: newItem } = await env.DB.prepare(selectQuery)
+        .bind(newItemId)
+        .all();
+
+      return new Response(JSON.stringify(newItem[0]), {
         status: 201,
         headers: { 'Content-Type': 'application/json' }
       });
